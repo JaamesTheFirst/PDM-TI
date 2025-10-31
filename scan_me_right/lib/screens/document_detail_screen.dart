@@ -7,7 +7,7 @@ import '../models/document.dart';
 import '../providers/document_provider.dart';
 import 'package:intl/intl.dart';
 
-class DocumentDetailScreen extends StatelessWidget {
+class DocumentDetailScreen extends StatefulWidget {
   final Document document;
 
   const DocumentDetailScreen({
@@ -16,10 +16,55 @@ class DocumentDetailScreen extends StatelessWidget {
   });
 
   @override
+  State<DocumentDetailScreen> createState() => _DocumentDetailScreenState();
+}
+
+class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
+  late TextEditingController _textController;
+  bool _isEdited = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _textController = TextEditingController(text: widget.document.ocrText ?? '');
+    _textController.addListener(() {
+      if (_textController.text != widget.document.ocrText) {
+        setState(() => _isEdited = true);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _textController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _saveChanges() async {
+    final updatedDocument = widget.document.copyWith(
+      ocrText: _textController.text,
+      updatedAt: DateTime.now(),
+    );
+    
+    await context.read<DocumentProvider>().updateDocument(updatedDocument);
+    
+    if (!mounted) return;
+    setState(() => _isEdited = false);
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Changes saved!'),
+        backgroundColor: Colors.green,
+        duration: Duration(seconds: 2),
+      ),
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(document.title),
+        title: Text(widget.document.title),
         actions: [
           IconButton(
             icon: const Icon(Icons.share),
@@ -67,14 +112,14 @@ class DocumentDetailScreen extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             // Image Preview
-            if (File(document.imagePath).existsSync())
+            if (File(widget.document.imagePath).existsSync())
               Container(
                 height: 300,
                 decoration: BoxDecoration(
                   color: Colors.grey[200],
                 ),
                 child: Image.file(
-                  File(document.imagePath),
+                  File(widget.document.imagePath),
                   fit: BoxFit.contain,
                 ),
               ),
@@ -95,7 +140,7 @@ class DocumentDetailScreen extends StatelessWidget {
                   _buildInfoRow(
                     context,
                     'Created',
-                    DateFormat('MMMM dd, yyyy • HH:mm').format(document.createdAt),
+                    DateFormat('MMMM dd, yyyy • HH:mm').format(widget.document.createdAt),
                   ),
                   const Divider(),
                   
@@ -110,29 +155,46 @@ class DocumentDetailScreen extends StatelessWidget {
                               fontWeight: FontWeight.bold,
                             ),
                       ),
-                      if (document.ocrText != null)
-                        IconButton(
-                          icon: const Icon(Icons.copy),
-                          tooltip: 'Copy text',
-                          onPressed: () => _copyText(context, document.ocrText!),
-                        ),
+                      Row(
+                        children: [
+                          if (_isEdited)
+                            TextButton.icon(
+                              onPressed: _saveChanges,
+                              icon: const Icon(Icons.save, size: 20),
+                              label: const Text('Save'),
+                            ),
+                          if (widget.document.ocrText != null)
+                            IconButton(
+                              icon: const Icon(Icons.copy),
+                              tooltip: 'Copy text',
+                              onPressed: () => _copyText(context, _textController.text),
+                            ),
+                        ],
+                      ),
                     ],
                   ),
                   const SizedBox(height: 12),
                   
-                  if (document.ocrText != null && document.ocrText!.isNotEmpty)
+                  if (widget.document.ocrText != null && widget.document.ocrText!.isNotEmpty)
                     Container(
                       padding: const EdgeInsets.all(16),
                       decoration: BoxDecoration(
-                        color: Colors.grey[100],
+                        color: Colors.white,
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(color: Colors.grey[300]!),
                       ),
-                      child: SelectableText(
-                        document.ocrText!,
+                      child: TextField(
+                        controller: _textController,
+                        maxLines: null,
                         style: const TextStyle(
-                          fontSize: 14,
+                          fontSize: 16,
                           height: 1.5,
+                          color: Colors.black,  // Black text!
+                        ),
+                        decoration: const InputDecoration(
+                          border: InputBorder.none,
+                          hintText: 'Edit text...',
+                          hintStyle: TextStyle(color: Colors.grey),
                         ),
                       ),
                     )
@@ -203,10 +265,10 @@ class DocumentDetailScreen extends StatelessWidget {
 
   Future<void> _shareDocument(BuildContext context) async {
     try {
-      if (File(document.imagePath).existsSync()) {
+      if (File(widget.document.imagePath).existsSync()) {
         await Share.shareXFiles(
-          [XFile(document.imagePath)],
-          text: document.ocrText ?? document.title,
+          [XFile(widget.document.imagePath)],
+          text: widget.document.ocrText ?? widget.document.title,
         );
       }
     } catch (e) {
@@ -234,7 +296,7 @@ class DocumentDetailScreen extends StatelessWidget {
   Future<void> _exportPDF(BuildContext context) async {
     try {
       final provider = context.read<DocumentProvider>();
-      final file = await provider.exportToPDF(document);
+      final file = await provider.exportToPDF(widget.document);
       
       if (!context.mounted) return;
       
@@ -262,7 +324,7 @@ class DocumentDetailScreen extends StatelessWidget {
   Future<void> _exportTXT(BuildContext context) async {
     try {
       final provider = context.read<DocumentProvider>();
-      final file = await provider.exportToTXT(document);
+      final file = await provider.exportToTXT(widget.document);
       
       if (!context.mounted) return;
       
@@ -308,7 +370,7 @@ class DocumentDetailScreen extends StatelessWidget {
     );
 
     if (confirmed == true && context.mounted) {
-      await context.read<DocumentProvider>().deleteDocument(document.id);
+      await context.read<DocumentProvider>().deleteDocument(widget.document.id);
       
       if (context.mounted) {
         Navigator.pop(context);

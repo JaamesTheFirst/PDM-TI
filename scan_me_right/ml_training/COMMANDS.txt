@@ -1,0 +1,53 @@
+================================================================================
+COMPLETE ML TRAINING COMMANDS - Copy & Paste These
+================================================================================
+
+# Navigate to ml_training directory
+cd /Users/tiagomarques/PDM-TI/scan_me_right/ml_training
+
+# Install Python dependencies (one time)
+pip3 install -r requirements.txt
+
+# Generate 5,000 realistic document pages (~20-30 min)
+python3 generate_realistic_documents.py
+
+# Train the model (~2-4 hours on Mac M3)
+python3 train_model_pages.py
+
+# Deploy model to Flutter app
+mkdir -p ../assets/models
+cp formatting_classifier.tflite ../assets/models/
+
+# Update Flutter dependencies
+cd /Users/tiagomarques/PDM-TI/scan_me_right
+flutter pub get
+
+================================================================================
+WHAT THIS GENERATES
+================================================================================
+
+5,000 Document Pages with:
+  ✅ Titles (H1, H2, H3)
+  ✅ Paragraphs (normal, bold, italic, underline)
+  ✅ Bullet points
+  ✅ Numbered lists
+  ✅ Blockquotes
+  ✅ Horizontal divider lines
+  ✅ Indented paragraphs
+  ✅ Mixed inline formatting
+  
+Total: ~20,000-30,000 individual text blocks for training
+16 different formatting classes
+
+================================================================================
+TIME ESTIMATES
+================================================================================
+
+Data Generation: 20-30 minutes
+Training:        2-4 hours
+Total:           ~3-5 hours
+
+TIP: Run overnight or while doing other work!
+
+================================================================================
+
