@@ -54,13 +54,38 @@ class DocumentDataGenerator:
     def get_font_path(self):
         """
         Try to locate system fonts for different text styles
-        Adjust paths based on your system
+        Supports Linux (Azure), macOS, and Windows
         """
-        font_paths = {
-            'normal': '/System/Library/Fonts/Helvetica.ttc',
-            'bold': '/System/Library/Fonts/Helvetica.ttc',
-            'italic': '/System/Library/Fonts/Helvetica.ttc',
-        }
+        import platform
+        system = platform.system()
+        
+        if system == 'Linux':
+            # Common Linux font paths (Azure/Linux)
+            font_paths = {
+                'normal': '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+                'bold': '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf',
+                'italic': '/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf',
+            }
+            # Try to find available fonts
+            fallback_fonts = [
+                '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+                '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+            ]
+        elif system == 'Darwin':  # macOS
+            font_paths = {
+                'normal': '/System/Library/Fonts/Helvetica.ttc',
+                'bold': '/System/Library/Fonts/Helvetica.ttc',
+                'italic': '/System/Library/Fonts/Helvetica.ttc',
+            }
+            fallback_fonts = ['/System/Library/Fonts/Helvetica.ttc']
+        else:  # Windows
+            font_paths = {
+                'normal': 'C:/Windows/Fonts/arial.ttf',
+                'bold': 'C:/Windows/Fonts/arialbd.ttf',
+                'italic': 'C:/Windows/Fonts/ariali.ttf',
+            }
+            fallback_fonts = ['C:/Windows/Fonts/arial.ttf']
+        
         return font_paths
     
     def apply_augmentation(self, image):
@@ -105,16 +130,28 @@ class DocumentDataGenerator:
         draw = ImageDraw.Draw(image)
         
         # Try to load font (fallback to default if not available)
-        try:
-            if style == 'title':
-                font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", font_size)
-            elif style == 'bold':
-                font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", font_size)
-            elif style == 'italic':
-                font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", font_size)
-            else:
-                font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", font_size)
-        except:
+        font_paths = self.get_font_path()
+        font = None
+        
+        # Try style-specific font first
+        font_key = 'bold' if style == 'bold' else ('italic' if style == 'italic' else 'normal')
+        if font_key in font_paths:
+            try:
+                font = ImageFont.truetype(font_paths[font_key], font_size)
+            except:
+                pass
+        
+        # Fallback to any available font
+        if font is None:
+            for font_path in font_paths.values():
+                try:
+                    font = ImageFont.truetype(font_path, font_size)
+                    break
+                except:
+                    continue
+        
+        # Last resort: default font
+        if font is None:
             font = ImageFont.load_default()
         
         # Random position

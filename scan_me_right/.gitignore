@@ -43,3 +43,26 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Python virtual environments
+**/venv/
+**/env/
+**/.venv/
+venv/
+env/
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# ML Training artifacts (large files)
+ml_training/training_data/
+ml_training/models/*.keras
+ml_training/models/*.h5
+ml_training/models/training_history.png
+
+# IDE/Editor configs
+devtools_options.yaml
