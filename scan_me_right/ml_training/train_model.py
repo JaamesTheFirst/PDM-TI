@@ -14,6 +14,7 @@ from tensorflow.keras.applications import MobileNetV3Small
 from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Dropout
 from tensorflow.keras.models import Model
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
+from tensorflow.keras.utils import Sequence
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 import matplotlib
@@ -90,10 +91,50 @@ def check_device():
         return False
 
 
+class DataGenerator(Sequence):
+    """Generator that loads images in batches to avoid OOM"""
+    
+    def __init__(self, samples, batch_size, img_size, shuffle=True):
+        self.samples = samples
+        self.batch_size = batch_size
+        self.img_size = img_size
+        self.shuffle = shuffle
+        self.indices = np.arange(len(samples))
+        if shuffle:
+            np.random.shuffle(self.indices)
+    
+    def __len__(self):
+        return int(np.ceil(len(self.samples) / self.batch_size))
+    
+    def __getitem__(self, idx):
+        batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
+        batch_samples = [self.samples[i] for i in batch_indices]
+        
+        images = []
+        labels = []
+        
+        for sample in batch_samples:
+            img_path = os.path.join(IMAGES_DIR, sample['filename'])
+            if os.path.exists(img_path):
+                img = Image.open(img_path).convert('RGB')
+                img = img.resize(self.img_size)
+                img_array = np.array(img, dtype=np.float32) / 255.0
+                images.append(img_array)
+                
+                style = sample['style']
+                labels.append(STYLE_TO_CLASS.get(style, 0))
+        
+        return np.array(images), np.array(labels)
+    
+    def on_epoch_end(self):
+        if self.shuffle:
+            np.random.shuffle(self.indices)
+
+
 def load_dataset():
-    """Load images and labels from the training data directory"""
+    """Load dataset metadata and return generators (loads images in batches)"""
     print("\n" + "=" * 60)
-    print("Loading Dataset")
+    print("Loading Dataset Metadata")
     print("=" * 60)
     
     if not os.path.exists(METADATA_FILE):
@@ -102,55 +143,60 @@ def load_dataset():
             "Please run generate_training_data.py first to create the dataset."
         )
     
-    # Load metadata
+    # Load metadata (just file paths and labels, not actual images)
+    print("Loading metadata...")
+    start_time = time.time()
     with open(METADATA_FILE, 'r') as f:
         metadata = json.load(f)
     
-    images = []
-    labels = []
-    
-    print(f"Loading {len(metadata['samples'])} samples...")
-    start_time = time.time()
-    
-    for i, sample in enumerate(metadata['samples']):
-        if (i + 1) % 500 == 0:
-            elapsed = time.time() - start_time
-            rate = (i + 1) / elapsed
-            remaining = (len(metadata['samples']) - i - 1) / rate
-            print(f"  Loaded {i + 1}/{len(metadata['samples'])} samples "
-                  f"({rate:.1f} samples/sec, ~{remaining:.0f}s remaining)")
-        
-        # Load image
-        img_path = os.path.join(IMAGES_DIR, sample['filename'])
-        if not os.path.exists(img_path):
-            print(f"  Warning: Image not found: {img_path}")
-            continue
-        
-        img = Image.open(img_path).convert('RGB')
-        img = img.resize(IMG_SIZE)
-        img_array = np.array(img) / 255.0  # Normalize to [0, 1]
-        images.append(img_array)
-        
-        # Get label
-        style = sample['style']
-        labels.append(STYLE_TO_CLASS.get(style, 0))
-    
-    images = np.array(images, dtype=np.float32)
-    labels = np.array(labels, dtype=np.int32)
-    
+    samples = metadata['samples']
     elapsed = time.time() - start_time
-    print(f"\n✅ Dataset loaded successfully in {elapsed:.1f}s!")
-    print(f"   Images shape: {images.shape}")
-    print(f"   Labels shape: {labels.shape}")
+    
+    print(f"\n✅ Metadata loaded in {elapsed:.1f}s!")
+    print(f"   Total samples: {len(samples):,}")
     print(f"   Classes: {len(STYLE_TO_CLASS)}")
     
     # Print class distribution
-    unique, counts = np.unique(labels, return_counts=True)
-    print("\nClass distribution:")
-    for label, count in zip(unique, counts):
-        print(f"  {CLASS_TO_STYLE[label]}: {count} samples")
+    styles = [s['style'] for s in samples]
+    style_counts = {}
+    for style in styles:
+        style_counts[style] = style_counts.get(style, 0) + 1
     
-    return images, labels
+    print("\nClass distribution:")
+    for style, count in sorted(style_counts.items()):
+        print(f"  {style}: {count:,} samples")
+    
+    # Extract labels for splitting
+    labels = [STYLE_TO_CLASS.get(s['style'], 0) for s in samples]
+    
+    # Split indices (stratified split)
+    train_indices, temp_indices, y_train_temp, y_temp = train_test_split(
+        np.arange(len(samples)), labels, test_size=TEST_SPLIT, 
+        random_state=42, stratify=labels
+    )
+    val_indices, test_indices = train_test_split(
+        temp_indices, test_size=VALIDATION_SPLIT/(1-TEST_SPLIT),
+        random_state=42, stratify=[labels[i] for i in temp_indices]
+    )
+    
+    # Create sample lists for each split
+    train_samples = [samples[i] for i in train_indices]
+    val_samples = [samples[i] for i in val_indices]
+    test_samples = [samples[i] for i in test_indices]
+    
+    print(f"\nDataset splits:")
+    print(f"  Training:   {len(train_samples):,} samples ({len(train_samples)/len(samples)*100:.1f}%)")
+    print(f"  Validation: {len(val_samples):,} samples ({len(val_samples)/len(samples)*100:.1f}%)")
+    print(f"  Test:       {len(test_samples):,} samples ({len(test_samples)/len(samples)*100:.1f}%)")
+    print(f"\n✅ Using batch loading - images will be loaded on-demand during training")
+    print(f"   This avoids out-of-memory errors with large datasets.\n")
+    
+    # Create generators
+    train_gen = DataGenerator(train_samples, BATCH_SIZE, IMG_SIZE, shuffle=True)
+    val_gen = DataGenerator(val_samples, BATCH_SIZE, IMG_SIZE, shuffle=False)
+    test_gen = DataGenerator(test_samples, BATCH_SIZE, IMG_SIZE, shuffle=False)
+    
+    return train_gen, val_gen, test_gen, test_samples
 
 
 def build_model(num_classes=5):
@@ -198,8 +244,8 @@ def build_model(num_classes=5):
     return model
 
 
-def train_model(model, X_train, y_train, X_val, y_val):
-    """Train the model"""
+def train_model(model, train_gen, val_gen):
+    """Train the model using generators"""
     print("\n" + "=" * 60)
     print("Training Model")
     print("=" * 60)
@@ -234,20 +280,23 @@ def train_model(model, X_train, y_train, X_val, y_val):
     print(f"  Batch size: {BATCH_SIZE}")
     print(f"  Epochs: {EPOCHS}")
     print(f"  Learning rate: {LEARNING_RATE}")
-    print(f"  Training samples: {len(X_train)}")
-    print(f"  Validation samples: {len(X_val)}")
-    print("\nStarting training...\n")
+    print(f"  Training samples: {len(train_gen.samples):,}")
+    print(f"  Validation samples: {len(val_gen.samples):,}")
+    print(f"  Batches per epoch: {len(train_gen)}")
+    print("\nStarting training...")
+    print("(Using batch loading - images loaded on-demand to save memory)\n")
     
     start_time = time.time()
     
-    # Train
+    # Train with generators
     history = model.fit(
-        X_train, y_train,
-        batch_size=BATCH_SIZE,
+        train_gen,
         epochs=EPOCHS,
-        validation_data=(X_val, y_val),
+        validation_data=val_gen,
         callbacks=callbacks,
-        verbose=1
+        verbose=1,
+        workers=4,  # Use 4 workers for parallel image loading
+        use_multiprocessing=False  # Set to False to avoid issues
     )
     
     elapsed = time.time() - start_time
@@ -325,7 +374,7 @@ def plot_training_history(history):
     plt.close()
 
 
-def evaluate_model(model, X_test, y_test):
+def evaluate_model(model, test_gen, test_samples):
     """Evaluate model on test set"""
     print("\n" + "=" * 60)
     print("Evaluating Model")
@@ -336,9 +385,9 @@ def evaluate_model(model, X_test, y_test):
         print(f"Loading best model from checkpoint...")
         model = keras.models.load_model(MODEL_CHECKPOINT_PATH)
     
-    # Evaluate
+    # Evaluate using generator
     print("Evaluating on test set...")
-    test_loss, test_accuracy = model.evaluate(X_test, y_test, verbose=1, batch_size=BATCH_SIZE)
+    test_loss, test_accuracy = model.evaluate(test_gen, verbose=1, workers=4, use_multiprocessing=False)
     
     print(f"\n✅ Test Results:")
     print(f"   Test Loss: {test_loss:.4f}")
@@ -349,19 +398,28 @@ def evaluate_model(model, X_test, y_test):
     else:
         print(f"   ⚠️  Accuracy below goal (≥ 90%)")
     
-    # Get predictions
-    print("\nGenerating predictions...")
-    y_pred = model.predict(X_test, batch_size=BATCH_SIZE, verbose=1)
-    y_pred_classes = np.argmax(y_pred, axis=1)
+    # Get predictions for per-class accuracy
+    print("\nGenerating predictions for detailed metrics...")
+    all_preds = []
+    all_labels = []
+    
+    for i in range(len(test_gen)):
+        X_batch, y_batch = test_gen[i]
+        pred_batch = model.predict(X_batch, verbose=0)
+        all_preds.extend(np.argmax(pred_batch, axis=1))
+        all_labels.extend(y_batch)
+    
+    all_preds = np.array(all_preds)
+    all_labels = np.array(all_labels)
     
     # Print per-class accuracy
     print("\nPer-class accuracy:")
     for class_id, style_name in CLASS_TO_STYLE.items():
-        mask = y_test == class_id
+        mask = all_labels == class_id
         if np.sum(mask) > 0:
-            class_acc = np.mean(y_pred_classes[mask] == y_test[mask])
+            class_acc = np.mean(all_preds[mask] == all_labels[mask])
             count = np.sum(mask)
-            print(f"  {style_name:12s}: {class_acc*100:5.2f}% ({count} samples)")
+            print(f"  {style_name:12s}: {class_acc*100:5.2f}% ({count:,} samples)")
     
     return test_accuracy
 
@@ -382,34 +440,17 @@ def main():
         print("   - Monitor progress with callbacks (early stopping enabled)")
         print("   - Best model will be saved automatically")
     
-    # Load dataset
-    images, labels = load_dataset()
-    
-    # Split dataset
-    print("\n" + "=" * 60)
-    print("Splitting Dataset")
-    print("=" * 60)
-    X_temp, X_test, y_temp, y_test = train_test_split(
-        images, labels, test_size=TEST_SPLIT, random_state=42, stratify=labels
-    )
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_temp, y_temp, test_size=VALIDATION_SPLIT/(1-TEST_SPLIT), 
-        random_state=42, stratify=y_temp
-    )
-    
-    print(f"Dataset splits:")
-    print(f"  Training:   {len(X_train):5d} samples ({len(X_train)/len(images)*100:.1f}%)")
-    print(f"  Validation: {len(X_val):5d} samples ({len(X_val)/len(images)*100:.1f}%)")
-    print(f"  Test:       {len(X_test):5d} samples ({len(X_test)/len(images)*100:.1f}%)")
+    # Load dataset (returns generators, not loaded arrays)
+    train_gen, val_gen, test_gen, test_samples = load_dataset()
     
     # Build model
     model = build_model(num_classes=len(STYLE_TO_CLASS))
     
-    # Train
-    history, model = train_model(model, X_train, y_train, X_val, y_val)
+    # Train using generators
+    history, model = train_model(model, train_gen, val_gen)
     
-    # Evaluate
-    test_accuracy = evaluate_model(model, X_test, y_test)
+    # Evaluate using generator
+    test_accuracy = evaluate_model(model, test_gen, test_samples)
     
     # Plot history
     try:

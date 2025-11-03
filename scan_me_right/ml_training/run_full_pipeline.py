@@ -14,23 +14,32 @@ def run_command(cmd, description):
     print(description)
     print("=" * 60)
     print()
+    sys.stdout.flush()  # Force flush output
     
     try:
-        result = subprocess.run(
+        # Use Popen for real-time streaming output
+        process = subprocess.Popen(
             cmd,
             shell=True,
-            check=True,
-            capture_output=False,
-            text=True
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+            text=True,
+            bufsize=1  # Line buffered
         )
+        process.wait()  # Wait for completion
+        
+        if process.returncode != 0:
+            print(f"\n❌ Error: {description} failed!")
+            print(f"Exit code: {process.returncode}")
+            sys.exit(1)
+        
         print()
+        sys.stdout.flush()
         return True
-    except subprocess.CalledProcessError as e:
-        print(f"\n❌ Error: {description} failed!")
-        print(f"Exit code: {e.returncode}")
-        sys.exit(1)
     except KeyboardInterrupt:
         print("\n\n⚠️  Pipeline interrupted by user")
+        if 'process' in locals():
+            process.terminate()
         sys.exit(130)
 
 def main():
@@ -44,29 +53,16 @@ def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
     os.chdir(script_dir)
     
-    # Step 1: Generate Training Data
-    training_data_dir = "training_data"
-    metadata_file = os.path.join(training_data_dir, "metadata.json")
-    
-    if os.path.exists(metadata_file):
-        print("⚠️  Training data already exists.")
-        print("   To regenerate, delete the training_data/ directory first.")
-        print("   Proceeding with existing data...")
-        print()
-    else:
-        run_command(
-            "python3 generate_training_data.py",
-            "Step 1/2: Generating Training Data"
-        )
-    
-    # Step 2: Train Model
-    print()
-    print("⚠️  NOTE: Training will take approximately 2-5 hours on 16-core CPU")
-    print("   You can safely leave this running overnight.")
-    print()
-    
+    # Step 1: Generate Training Data (always runs, overwrites if exists)
+    # Use -u flag for unbuffered output
     run_command(
-        "python3 train_model.py",
+        "python3 -u generate_training_data.py",
+        "Step 1/2: Generating Training Data"
+    )
+    
+    # Step 2: Train Model (loads all available data dynamically)
+    run_command(
+        "python3 -u train_model.py",
         "Step 2/2: Training Model"
     )
     
@@ -88,4 +84,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n\n⚠️  Pipeline interrupted by user")
         sys.exit(130)
+
+
 
