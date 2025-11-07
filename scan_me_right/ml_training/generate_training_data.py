@@ -80,6 +80,28 @@ BLOCK_TYPES = [
     "numbered_list",
 ]
 
+FEATURE_PROBABILITIES = {
+    "title": 0.75,
+    "paragraph": 0.9,
+    "bold": 0.55,
+    "italic": 0.55,
+    "underline": 0.45,
+    "bullet_list": 0.4,
+    "numbered_list": 0.35,
+}
+
+MIN_BLOCKS_PER_PAGE = 2
+MAX_BLOCKS_PER_PAGE = 6
+TEMPLATE_PROBABILITY = 0.25
+
+LAYOUT_TEMPLATES = [
+    ["title", "paragraph", "paragraph"],
+    ["title", "paragraph", "bullet_list"],
+    ["paragraph", "paragraph", "bold", "italic"],
+    ["paragraph", "underline"],
+    ["paragraph", "bullet_list", "numbered_list"],
+]
+
 STYLE_FLAGS = {
     "title": {"is_bold": True, "is_italic": False, "is_underlined": False, "is_list": False},
     "paragraph": {"is_bold": False, "is_italic": False, "is_underlined": False, "is_list": False},
@@ -366,14 +388,8 @@ class DocumentDataGenerator:
         draw = ImageDraw.Draw(page)
 
         y_cursor = PAGE_MARGIN
-        block_plan = BLOCK_TYPES.copy()
-        random.shuffle(block_plan)
+        block_plan = self._choose_block_plan()
         features_present: Set[str] = set()
-
-        # Encourage title to appear near the top
-        if "title" in block_plan:
-            block_plan.remove("title")
-            block_plan.insert(0, "title")
 
         for style in block_plan:
             y_cursor, block_height = self._draw_block(draw, page, style, y_cursor, page_index, features_present)
@@ -387,6 +403,30 @@ class DocumentDataGenerator:
                 break
 
         self._save_page_image(page, page_index, features_present)
+
+    def _choose_block_plan(self) -> List[str]:
+        if random.random() < TEMPLATE_PROBABILITY:
+            plan = random.choice(LAYOUT_TEMPLATES).copy()
+        else:
+            candidates = [
+                style
+                for style in BLOCK_TYPES
+                if random.random() < FEATURE_PROBABILITIES.get(style, 0.5)
+            ]
+            if not candidates:
+                candidates = ["paragraph"]
+            random.shuffle(candidates)
+            limit = random.randint(MIN_BLOCKS_PER_PAGE, max(MIN_BLOCKS_PER_PAGE, min(MAX_BLOCKS_PER_PAGE, len(candidates))))
+            plan = candidates[:limit]
+
+        if "paragraph" not in plan:
+            plan.insert(1 if plan else 0, "paragraph")
+
+        if plan[0] != "title" and "title" in plan:
+            plan.remove("title")
+            plan.insert(0, "title")
+
+        return plan
 
     def _save_page_image(self, page: Image.Image, page_index: int, features_present: Set[str]) -> None:
         page_copy = page.copy()

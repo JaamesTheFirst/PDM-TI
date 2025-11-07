@@ -36,8 +36,8 @@ BATCH_SIZE = 32  # Larger batch size for 16 cores
 EPOCHS = 50
 IMG_SIZE = (224, 224)  # MobileNetV3 input size
 LEARNING_RATE = 0.001
-VALIDATION_SPLIT = 0.1
-TEST_SPLIT = 0.1
+VALIDATION_SPLIT = 0.15
+TEST_SPLIT = 0.15
 
 # Style mapping
 STYLE_TO_CLASS = {
@@ -184,18 +184,26 @@ def load_dataset():
         print(f"  {style:13s}: {count:4d} pages ({percentage:5.1f}%)")
     
     indices = np.arange(len(samples))
+    val_test_fraction = VALIDATION_SPLIT + TEST_SPLIT
     train_indices, temp_indices = train_test_split(
-        indices, test_size=TEST_SPLIT, random_state=42
-    )
-    remaining_fraction = 1 - TEST_SPLIT
-    val_fraction = VALIDATION_SPLIT / remaining_fraction if remaining_fraction else 0.5
-    val_indices, test_indices = train_test_split(
-        temp_indices,
-        test_size=max(1e-6, 1 - val_fraction),
+        indices,
+        test_size=val_test_fraction,
         random_state=42,
+        shuffle=True,
     )
-    val_indices = np.array(val_indices)
-    test_indices = np.array(test_indices)
+    if val_test_fraction == 0:
+        val_indices = np.array([], dtype=int)
+        test_indices = np.array([], dtype=int)
+    else:
+        relative_test = TEST_SPLIT / val_test_fraction
+        val_indices, test_indices = train_test_split(
+            temp_indices,
+            test_size=relative_test,
+            random_state=42,
+            shuffle=True,
+        )
+        val_indices = np.array(val_indices)
+        test_indices = np.array(test_indices)
     
     train_samples = [samples[i] for i in train_indices]
     val_samples = [samples[i] for i in val_indices]
