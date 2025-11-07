@@ -16,7 +16,6 @@ from tensorflow.keras.models import Model
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 from tensorflow.keras.utils import Sequence
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
 import matplotlib
 matplotlib.use('Agg')  # Non-interactive backend for server environments
 import matplotlib.pyplot as plt
@@ -26,6 +25,7 @@ import time
 TRAINING_DATA_DIR = "training_data"
 IMAGES_DIR = os.path.join(TRAINING_DATA_DIR, "images")
 LABELS_DIR = os.path.join(TRAINING_DATA_DIR, "labels")
+PAGES_DIR = os.path.join(TRAINING_DATA_DIR, "pages")
 METADATA_FILE = os.path.join(TRAINING_DATA_DIR, "metadata.json")
 MODEL_OUTPUT_DIR = "models"
 MODEL_CHECKPOINT_PATH = os.path.join(MODEL_OUTPUT_DIR, "best_model.keras")
@@ -41,11 +41,13 @@ TEST_SPLIT = 0.1
 
 # Style mapping
 STYLE_TO_CLASS = {
-    'normal': 0,
-    'bold': 1,
-    'italic': 2,
-    'underline': 3,
-    'title': 4
+    'title': 0,
+    'paragraph': 1,
+    'bold': 2,
+    'italic': 3,
+    'underline': 4,
+    'bullet_list': 5,
+    'numbered_list': 6,
 }
 
 CLASS_TO_STYLE = {v: k for k, v in STYLE_TO_CLASS.items()}
@@ -93,7 +95,7 @@ def check_device():
 
 class DataGenerator(Sequence):
     """Generator that loads images in batches to avoid OOM"""
-    
+
     def __init__(self, samples, batch_size, img_size, shuffle=True):
         self.samples = samples
         self.batch_size = batch_size
@@ -102,30 +104,29 @@ class DataGenerator(Sequence):
         self.indices = np.arange(len(samples))
         if shuffle:
             np.random.shuffle(self.indices)
-    
+
     def __len__(self):
         return int(np.ceil(len(self.samples) / self.batch_size))
-    
+
     def __getitem__(self, idx):
         batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
         batch_samples = [self.samples[i] for i in batch_indices]
-        
+
         images = []
         labels = []
-        
+
         for sample in batch_samples:
-            img_path = os.path.join(IMAGES_DIR, sample['filename'])
+            img_path = os.path.join(PAGES_DIR, sample['filename'])
             if os.path.exists(img_path):
                 img = Image.open(img_path).convert('RGB')
                 img = img.resize(self.img_size)
                 img_array = np.array(img, dtype=np.float32) / 255.0
                 images.append(img_array)
-                
-                style = sample['style']
-                labels.append(STYLE_TO_CLASS.get(style, 0))
-        
-        return np.array(images), np.array(labels)
-    
+
+                labels.append(sample['label'])
+
+        return np.array(images), np.array(labels, dtype=np.float32)
+
     def on_epoch_end(self):
         if self.shuffle:
             np.random.shuffle(self.indices)
@@ -143,55 +144,70 @@ def load_dataset():
             "Please run generate_training_data.py first to create the dataset."
         )
     
+    if not os.path.isdir(PAGES_DIR):
+        raise FileNotFoundError(
+            f"Page image directory not found: {PAGES_DIR}\n"
+            "Please regenerate the dataset to include full-page renders."
+        )
+    
     # Load metadata (just file paths and labels, not actual images)
     print("Loading metadata...")
     start_time = time.time()
-    with open(METADATA_FILE, 'r') as f:
+    with open(METADATA_FILE, 'r', encoding='utf-8') as f:
         metadata = json.load(f)
-    
-    samples = metadata['samples']
     elapsed = time.time() - start_time
+    pages = metadata.get('pages', [])
+    if not pages:
+        raise ValueError("Metadata does not contain any page entries under the 'pages' key.")
+    
+    samples = []
+    class_totals = {style: 0 for style in STYLE_TO_CLASS.keys()}
+    for page in pages:
+        feature_flags = page.get('feature_flags', {})
+        label_vector = [0.0] * len(STYLE_TO_CLASS)
+        for style, class_idx in STYLE_TO_CLASS.items():
+            if feature_flags.get(style, 0):
+                label_vector[class_idx] = 1.0
+                class_totals[style] += 1
+        samples.append({
+            'filename': page['filename'],
+            'label': label_vector,
+        })
     
     print(f"\n✅ Metadata loaded in {elapsed:.1f}s!")
-    print(f"   Total samples: {len(samples):,}")
+    print(f"   Total pages: {len(samples):,}")
     print(f"   Classes: {len(STYLE_TO_CLASS)}")
     
-    # Print class distribution
-    styles = [s['style'] for s in samples]
-    style_counts = {}
-    for style in styles:
-        style_counts[style] = style_counts.get(style, 0) + 1
+    print("\nClass distribution (pages containing feature):")
+    for style, count in sorted(class_totals.items()):
+        percentage = (count / len(samples) * 100) if samples else 0
+        print(f"  {style:13s}: {count:4d} pages ({percentage:5.1f}%)")
     
-    print("\nClass distribution:")
-    for style, count in sorted(style_counts.items()):
-        print(f"  {style}: {count:,} samples")
-    
-    # Extract labels for splitting
-    labels = [STYLE_TO_CLASS.get(s['style'], 0) for s in samples]
-    
-    # Split indices (stratified split)
-    train_indices, temp_indices, y_train_temp, y_temp = train_test_split(
-        np.arange(len(samples)), labels, test_size=TEST_SPLIT, 
-        random_state=42, stratify=labels
+    indices = np.arange(len(samples))
+    train_indices, temp_indices = train_test_split(
+        indices, test_size=TEST_SPLIT, random_state=42
     )
+    remaining_fraction = 1 - TEST_SPLIT
+    val_fraction = VALIDATION_SPLIT / remaining_fraction if remaining_fraction else 0.5
     val_indices, test_indices = train_test_split(
-        temp_indices, test_size=VALIDATION_SPLIT/(1-TEST_SPLIT),
-        random_state=42, stratify=[labels[i] for i in temp_indices]
+        temp_indices,
+        test_size=max(1e-6, 1 - val_fraction),
+        random_state=42,
     )
+    val_indices = np.array(val_indices)
+    test_indices = np.array(test_indices)
     
-    # Create sample lists for each split
     train_samples = [samples[i] for i in train_indices]
     val_samples = [samples[i] for i in val_indices]
     test_samples = [samples[i] for i in test_indices]
     
     print(f"\nDataset splits:")
-    print(f"  Training:   {len(train_samples):,} samples ({len(train_samples)/len(samples)*100:.1f}%)")
-    print(f"  Validation: {len(val_samples):,} samples ({len(val_samples)/len(samples)*100:.1f}%)")
-    print(f"  Test:       {len(test_samples):,} samples ({len(test_samples)/len(samples)*100:.1f}%)")
+    print(f"  Training:   {len(train_samples):,} pages ({len(train_samples)/len(samples)*100:.1f}%)")
+    print(f"  Validation: {len(val_samples):,} pages ({len(val_samples)/len(samples)*100:.1f}%)")
+    print(f"  Test:       {len(test_samples):,} pages ({len(test_samples)/len(samples)*100:.1f}%)")
     print(f"\n✅ Using batch loading - images will be loaded on-demand during training")
     print(f"   This avoids out-of-memory errors with large datasets.\n")
     
-    # Create generators
     train_gen = DataGenerator(train_samples, BATCH_SIZE, IMG_SIZE, shuffle=True)
     val_gen = DataGenerator(val_samples, BATCH_SIZE, IMG_SIZE, shuffle=False)
     test_gen = DataGenerator(test_samples, BATCH_SIZE, IMG_SIZE, shuffle=False)
@@ -199,7 +215,7 @@ def load_dataset():
     return train_gen, val_gen, test_gen, test_samples
 
 
-def build_model(num_classes=5):
+def build_model(num_classes=len(STYLE_TO_CLASS)):
     """Build MobileNetV3-based model with transfer learning"""
     print("\n" + "=" * 60)
     print("Building Model")
@@ -224,15 +240,18 @@ def build_model(num_classes=5):
     x = GlobalAveragePooling2D()(x)
     x = Dense(128, activation='relu')(x)
     x = Dropout(0.5)(x)
-    outputs = Dense(num_classes, activation='softmax')(x)
+    outputs = Dense(num_classes, activation='sigmoid')(x)
     
     model = Model(inputs, outputs)
     
     # Compile model
     model.compile(
         optimizer=keras.optimizers.Adam(learning_rate=LEARNING_RATE),
-        loss='sparse_categorical_crossentropy',
-        metrics=['accuracy']
+        loss='binary_crossentropy',
+        metrics=[
+            keras.metrics.BinaryAccuracy(name='binary_accuracy', threshold=0.5),
+            keras.metrics.AUC(name='auc', multi_label=True, num_labels=num_classes),
+        ]
     )
     
     print(f"✅ Model built successfully!")
@@ -256,14 +275,14 @@ def train_model(model, train_gen, val_gen):
     # Callbacks
     callbacks = [
         EarlyStopping(
-            monitor='val_accuracy',
+            monitor='val_binary_accuracy',
             patience=10,
             restore_best_weights=True,
             verbose=1
         ),
         ModelCheckpoint(
             MODEL_CHECKPOINT_PATH,
-            monitor='val_accuracy',
+            monitor='val_binary_accuracy',
             save_best_only=True,
             verbose=1
         ),
@@ -295,8 +314,6 @@ def train_model(model, train_gen, val_gen):
         validation_data=val_gen,
         callbacks=callbacks,
         verbose=1,
-        workers=4,  # Use 4 workers for parallel image loading
-        use_multiprocessing=False  # Set to False to avoid issues
     )
     
     elapsed = time.time() - start_time
@@ -349,11 +366,11 @@ def plot_training_history(history):
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
     
     # Plot accuracy
-    ax1.plot(history.history['accuracy'], label='Training Accuracy', marker='o')
-    ax1.plot(history.history['val_accuracy'], label='Validation Accuracy', marker='s')
+    ax1.plot(history.history['binary_accuracy'], label='Training Binary Acc', marker='o')
+    ax1.plot(history.history['val_binary_accuracy'], label='Validation Binary Acc', marker='s')
     ax1.set_xlabel('Epoch')
-    ax1.set_ylabel('Accuracy')
-    ax1.set_title('Model Accuracy')
+    ax1.set_ylabel('Binary Accuracy')
+    ax1.set_title('Binary Accuracy (multi-label)')
     ax1.legend()
     ax1.grid(True)
     ax1.set_ylim([0, 1])
@@ -387,41 +404,56 @@ def evaluate_model(model, test_gen, test_samples):
     
     # Evaluate using generator
     print("Evaluating on test set...")
-    test_loss, test_accuracy = model.evaluate(test_gen, verbose=1, workers=4, use_multiprocessing=False)
-    
+    test_loss, test_binary_acc, test_auc = model.evaluate(test_gen, verbose=1)
+ 
     print(f"\n✅ Test Results:")
     print(f"   Test Loss: {test_loss:.4f}")
-    print(f"   Test Accuracy: {test_accuracy:.4f} ({test_accuracy*100:.2f}%)")
+    print(f"   Test Binary Accuracy: {test_binary_acc:.4f} ({test_binary_acc*100:.2f}%)")
+    print(f"   Test AUC: {test_auc:.4f}")
     
-    if test_accuracy >= 0.90:
+    if test_binary_acc >= 0.90:
         print(f"   ✅ Accuracy goal achieved (≥ 90%)")
     else:
         print(f"   ⚠️  Accuracy below goal (≥ 90%)")
-    
-    # Get predictions for per-class accuracy
+ 
+    # Get predictions for per-class metrics
     print("\nGenerating predictions for detailed metrics...")
-    all_preds = []
-    all_labels = []
-    
-    for i in range(len(test_gen)):
-        X_batch, y_batch = test_gen[i]
+    y_true = []
+    y_pred = []
+
+    for batch_idx in range(len(test_gen)):
+        X_batch, y_batch = test_gen[batch_idx]
         pred_batch = model.predict(X_batch, verbose=0)
-        all_preds.extend(np.argmax(pred_batch, axis=1))
-        all_labels.extend(y_batch)
-    
-    all_preds = np.array(all_preds)
-    all_labels = np.array(all_labels)
-    
-    # Print per-class accuracy
-    print("\nPer-class accuracy:")
+        y_true.append(y_batch)
+        y_pred.append(pred_batch)
+
+    y_true = np.vstack(y_true)
+    y_pred = np.vstack(y_pred)
+    y_pred_binary = (y_pred >= 0.5).astype(np.float32)
+
+    print("\nPer-class metrics (threshold=0.5):")
     for class_id, style_name in CLASS_TO_STYLE.items():
-        mask = all_labels == class_id
-        if np.sum(mask) > 0:
-            class_acc = np.mean(all_preds[mask] == all_labels[mask])
-            count = np.sum(mask)
-            print(f"  {style_name:12s}: {class_acc*100:5.2f}% ({count:,} samples)")
-    
-    return test_accuracy
+        true_col = y_true[:, class_id]
+        pred_col = y_pred_binary[:, class_id]
+        support = int(true_col.sum())
+        if support == 0:
+            print(f"  {style_name:12s}: no positive examples in test set")
+            continue
+
+        tp = np.sum((true_col == 1) & (pred_col == 1))
+        fp = np.sum((true_col == 0) & (pred_col == 1))
+        fn = np.sum((true_col == 1) & (pred_col == 0))
+
+        precision = tp / (tp + fp) if (tp + fp) else 0.0
+        recall = tp / (tp + fn) if (tp + fn) else 0.0
+        f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
+
+        print(
+            f"  {style_name:12s}: precision={precision:0.2f}, recall={recall:0.2f}, "
+            f"F1={f1:0.2f}, support={support}"
+        )
+
+    return test_binary_acc
 
 
 def main():
@@ -450,7 +482,7 @@ def main():
     history, model = train_model(model, train_gen, val_gen)
     
     # Evaluate using generator
-    test_accuracy = evaluate_model(model, test_gen, test_samples)
+    test_binary_acc = evaluate_model(model, test_gen, test_samples)
     
     # Plot history
     try:
@@ -469,7 +501,7 @@ def main():
     print("=" * 60)
     print(f"✅ Best model saved: {MODEL_CHECKPOINT_PATH}")
     print(f"✅ TFLite model saved: {tflite_path}")
-    print(f"✅ Test accuracy: {test_accuracy*100:.2f}%")
+    print(f"✅ Test binary accuracy: {test_binary_acc*100:.2f}%")
     print("\nNext steps:")
     print("1. Review training plots: models/training_history.png")
     print("2. Copy the .tflite model to scan_me_right/assets/models/")
