@@ -1,139 +1,73 @@
 # ML Training for Document Formatting Recognition
 
-This directory contains scripts and resources for training a custom TensorFlow Lite model to recognize text formatting in scanned documents.
+Scripts and resources for generating synthetic documents, training the TensorFlow Lite formatting classifier, and exporting artifacts consumed by the Flutter app.
 
 ## Overview
 
-The goal is to train a lightweight CNN (MobileNet-based) model that can classify text regions into different formatting categories:
-- **Normal text**
-- **Bold text**
-- **Italic text**
-- **Underlined text**
-- **Title/Header text**
+- **Input**: Synthetic A4 pages rendered at 1240x1754 plus cropped 224x224 blocks
+- **Labels**: Multi-label flags per block (normal, bold, italic, underline, title, bullet list, numbered list)
+- **Model**: MobileNetV3-Small backbone fine-tuned with sigmoid outputs (multi-label)
+- **Output artifacts**:
+  - `models/best_model.keras`
+  - `models/formatting_classifier.tflite`
+  - `models/training_history.png`
+
+Current best model reaches ~80% aggregate accuracy. Lists and inline emphasis remain the weakest classes and are the focus of future fine-tuning.
 
 ## Quick Start
 
-### 1. Install Dependencies
-
 ```bash
-cd ml_training
+cd scan_me_right/ml_training
+python -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
 pip install -r requirements.txt
+python run_full_pipeline.py
 ```
 
-### 2. Generate Training Data
+The pipeline performs two steps:
+1. `generate_training_data.py` creates synthetic pages, block crops, and metadata (stored in `training_data/`).
+2. `train_model.py` loads the generated dataset, trains the classifier, exports Keras and TFLite models, and logs metrics.
 
-```bash
-python generate_training_data.py
-```
+## Data Generation Details
 
-This will create a `training_data/` directory with:
-- `images/` - Synthetic document images
-- `labels/` - JSON labels for each image
-- `metadata.json` - Complete dataset metadata
+- **Page rendering**: Randomised layouts with titles, paragraphs, emphasis, bullet/numbered lists, underline, and optional dividers.
+- **Fonts**: Mix of sans/serif fonts with size, spacing, and alignment jitter.
+- **Augmentation**: Rotation, brightness/contrast jitter, Gaussian blur, and pixel noise.
+- **Outputs**:
+  - `training_data/pages/` full-page JPEGs
+  - `training_data/images/` 224×224 crops
+  - `training_data/labels/` JSON labels with multi-hot flags
+  - `training_data/metadata.json` summary + per-sample metadata
 
-### 3. Train the Model
+Configuration constants (page count, probabilities, etc.) live at the top of `generate_training_data.py`.
 
-(To be implemented in Phase 2)
+## Training Overview
 
-```python
-# Example training script structure
-# train_model.py
+- Uses TensorFlow/Keras with MobileNetV3-Small base, global pooling, and sigmoid outputs.
+- Loss: binary cross-entropy with optional class weighting.
+- Metrics: binary accuracy and per-class precision/recall/AUC (reported to console).
+- Split: 70% train / 15% validation / 15% test (configurable in `train_model.py`).
+- TFLite export applies default optimizations for on-device inference.
 
-import tensorflow as tf
-from tensorflow.keras.applications import MobileNetV3Small
-from tensorflow.keras.layers import Dense, GlobalAveragePooling2D
-from tensorflow.keras.models import Model
+To rerun training without regenerating data, skip step 1 above and call `python train_model.py` directly.
 
-# Load data
-# Build model
-# Train
-# Export to TFLite
-```
+## Deployment to Flutter
 
-### 4. Convert to TensorFlow Lite
+1. Copy `models/formatting_classifier.tflite` to `assets/models/`.
+2. Ensure `pubspec.yaml` lists `assets/models/formatting_classifier.tflite`.
+3. Build/run the Flutter app; `FormattingModelService` loads the asset at startup.
 
-```python
-# Convert trained model to TFLite format
-converter = tf.lite.TFLiteConverter.from_keras_model(model)
-converter.optimizations = [tf.lite.Optimize.DEFAULT]
-tflite_model = converter.convert()
+## Future Improvements
 
-# Save
-with open('formatting_classifier.tflite', 'wb') as f:
-    f.write(tflite_model)
-```
-
-### 5. Deploy to Flutter App
-
-1. Copy `.tflite` model to `assets/models/`
-2. Update `pubspec.yaml` to include model as asset
-3. Uncomment `tflite_flutter` dependency
-4. Update `ocr_service.dart` to use ML model instead of heuristics
-
-## Dataset Specifications
-
-- **Image Size**: 800x600 pixels
-- **Samples per Style**: 1,000 (configurable)
-- **Total Samples**: 5,000 (5 styles × 1,000 samples)
-- **Augmentations**:
-  - Random rotation (-5° to +5°)
-  - Brightness variation (0.8 to 1.2)
-  - Contrast variation (0.9 to 1.1)
-  - Gaussian blur (30% probability)
-  - Random noise (20% probability)
-
-## Model Architecture
-
-Recommended architecture for offline mobile inference:
-
-```
-Input (224x224x3)
-    ↓
-MobileNetV3-Small (pretrained)
-    ↓
-GlobalAveragePooling2D
-    ↓
-Dense(128, activation='relu')
-    ↓
-Dropout(0.5)
-    ↓
-Dense(5, activation='softmax')
-    ↓
-Output (normal, bold, italic, underline, title)
-```
-
-## Training Tips
-
-1. **Use Transfer Learning**: Start with pretrained MobileNetV3 weights
-2. **Data Augmentation**: Apply real-world transformations (rotation, blur, lighting)
-3. **Class Balancing**: Ensure equal samples per formatting style
-4. **Validation Split**: 80% train, 10% validation, 10% test
-5. **Early Stopping**: Monitor validation accuracy to prevent overfitting
-
-## Performance Goals
-
-- **Model Size**: < 10 MB
-- **Inference Time**: < 100ms on mobile device
-- **Accuracy**: > 90% on test set
-- **Classes**: 5 formatting types
-
-## Future Enhancements
-
-- [ ] Add real document images from public datasets
-- [ ] Support more formatting combinations (bold+italic, etc.)
-- [ ] Detect font sizes more accurately
-- [ ] Recognize text alignment (left, center, right)
-- [ ] Support multiple languages
+- Generate richer mixed-format samples (bold+italic, nested lists, headers with subtitles).
+- Incorporate public layout datasets (PubLayNet, DocBank) once download issues are resolved.
+- Add automated threshold calibration and confusion-matrix logging to `train_model.py`.
+- Experiment with focal loss or class weighting to lift list recall.
 
 ## Resources
 
 - [TensorFlow Lite Guide](https://www.tensorflow.org/lite/guide)
-- [MobileNet V3 Paper](https://arxiv.org/abs/1905.02244)
-- [Flutter TFLite Plugin](https://pub.dev/packages/tflite_flutter)
-- [DocBank Dataset](https://github.com/doc-analysis/DocBank)
-- [RVL-CDIP Dataset](https://www.cs.cmu.edu/~aharley/rvl-cdip/)
-
-## License
-
-This training pipeline is part of the Scan Me Right project.
+- [MobileNetV3 Paper](https://arxiv.org/abs/1905.02244)
+- [Flutter tflite_flutter plugin](https://pub.dev/packages/tflite_flutter)
 

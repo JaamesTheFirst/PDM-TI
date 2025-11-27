@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'dart:typed_data';
+
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import 'dart:io';
@@ -6,6 +8,9 @@ import '../providers/document_provider.dart';
 import '../utils/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as path;
+import 'package:image/image.dart' as img;
+
+import 'crop_screen.dart';
 
 class CameraScreen extends StatefulWidget {
   const CameraScreen({super.key});
@@ -19,6 +24,7 @@ class _CameraScreenState extends State<CameraScreen> {
   File? _capturedImage;
   bool _isProcessing = false;
   final TextEditingController _titleController = TextEditingController();
+  bool _hasConfirmedCrop = false;
 
   @override
   void dispose() {
@@ -45,6 +51,7 @@ class _CameraScreenState extends State<CameraScreen> {
     if (image != null) {
       setState(() {
         _capturedImage = File(image.path);
+        _hasConfirmedCrop = false;
       });
     }
   }
@@ -58,12 +65,26 @@ class _CameraScreenState extends State<CameraScreen> {
     if (image != null) {
       setState(() {
         _capturedImage = File(image.path);
+        _hasConfirmedCrop = false;
       });
     }
   }
 
   Future<void> _processDocument() async {
     if (_capturedImage == null) return;
+
+    if (!_hasConfirmedCrop) {
+      final applied = await _openCropper();
+      if (!applied) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Please confirm the area to scan before processing.'),
+          ),
+        );
+        return;
+      }
+    }
 
     setState(() {
       _isProcessing = true;
@@ -101,7 +122,7 @@ class _CameraScreenState extends State<CameraScreen> {
             backgroundColor: Colors.green,
           ),
         );
-        Navigator.pop(context);
+        Navigator.pop(context, document.id);
       } else {
         throw Exception('Failed to create document');
       }
@@ -120,6 +141,44 @@ class _CameraScreenState extends State<CameraScreen> {
         });
       }
     }
+  }
+
+  Future<bool> _openCropper() async {
+    if (_capturedImage == null) return false;
+
+    final Uint8List originalBytes = await _capturedImage!.readAsBytes();
+    final Uint8List? croppedBytes = await Navigator.push<Uint8List?>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => CropImageScreen(imageBytes: originalBytes),
+      ),
+    );
+
+    if (croppedBytes == null) {
+      return false;
+    }
+
+    final croppedImage = img.decodeImage(croppedBytes);
+    final bytesToSave =
+        croppedImage != null ? Uint8List.fromList(img.encodeJpg(croppedImage, quality: 90)) : croppedBytes;
+
+    final tempDir = await getTemporaryDirectory();
+    final fileName = 'crop_${DateTime.now().millisecondsSinceEpoch}.jpg';
+    final newPath = path.join(tempDir.path, fileName);
+    final newFile = File(newPath);
+    await newFile.writeAsBytes(bytesToSave);
+
+    final oldFile = _capturedImage;
+    if (!mounted) return false;
+    setState(() {
+      _capturedImage = newFile;
+      _hasConfirmedCrop = true;
+    });
+
+    if (oldFile != null && await oldFile.exists()) {
+      await oldFile.delete();
+    }
+    return true;
   }
 
   void _showPermissionDialog() {
@@ -248,7 +307,7 @@ class _CameraScreenState extends State<CameraScreen> {
               color: Theme.of(context).scaffoldBackgroundColor,
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.1),
+                  color: Colors.black.withOpacity(0.1),
                   blurRadius: 10,
                   offset: const Offset(0, -5),
                 ),
@@ -262,9 +321,17 @@ class _CameraScreenState extends State<CameraScreen> {
                     setState(() {
                       _capturedImage = null;
                       _titleController.clear();
+                      _hasConfirmedCrop = false;
                     });
                   },
                   child: const Text('Retake'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => _openCropper(),
+                  child: const Text('Crop'),
                 ),
               ),
               const SizedBox(width: 16),

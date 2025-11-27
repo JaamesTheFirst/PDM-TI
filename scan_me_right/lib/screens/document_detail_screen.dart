@@ -1,13 +1,14 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
-import 'package:share_plus/share_plus.dart' show XFile, Share;
-import 'dart:io';
+import 'package:share_plus/share_plus.dart' show Share, XFile;
 import '../models/document.dart';
 import '../providers/document_provider.dart';
-import 'package:intl/intl.dart';
 
-class DocumentDetailScreen extends StatelessWidget {
+class DocumentDetailScreen extends StatefulWidget {
   final Document document;
 
   const DocumentDetailScreen({
@@ -16,14 +17,42 @@ class DocumentDetailScreen extends StatelessWidget {
   });
 
   @override
+  State<DocumentDetailScreen> createState() => _DocumentDetailScreenState();
+}
+
+class _DocumentDetailScreenState extends State<DocumentDetailScreen> {
+  late Document _document;
+  late TextEditingController _textController;
+  bool _isEditing = false;
+  bool _isSaving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _document = widget.document;
+    _textController = TextEditingController(text: _document.ocrText ?? '');
+  }
+
+  @override
+  void dispose() {
+    _textController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(document.title),
+        title: Text(_document.title),
         actions: [
           IconButton(
             icon: const Icon(Icons.share),
             onPressed: () => _shareDocument(context),
+          ),
+          IconButton(
+            icon: Icon(_isEditing ? Icons.close : Icons.edit),
+            tooltip: _isEditing ? 'Cancel editing' : 'Edit text',
+            onPressed: _toggleEditing,
           ),
           PopupMenuButton<String>(
             onSelected: (value) => _handleMenuAction(context, value),
@@ -66,20 +95,18 @@ class DocumentDetailScreen extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Image Preview
-            if (File(document.imagePath).existsSync())
+            if (_document.imagePath.isNotEmpty &&
+                File(_document.imagePath).existsSync())
               Container(
                 height: 300,
                 decoration: BoxDecoration(
                   color: Colors.grey[200],
                 ),
                 child: Image.file(
-                  File(document.imagePath),
+                  File(_document.imagePath),
                   fit: BoxFit.contain,
                 ),
               ),
-            
-            // Document Info
             Padding(
               padding: const EdgeInsets.all(16),
               child: Column(
@@ -95,11 +122,10 @@ class DocumentDetailScreen extends StatelessWidget {
                   _buildInfoRow(
                     context,
                     'Created',
-                    DateFormat('MMMM dd, yyyy • HH:mm').format(document.createdAt),
+                    DateFormat('MMMM dd, yyyy • HH:mm')
+                        .format(_document.createdAt),
                   ),
                   const Divider(),
-                  
-                  // OCR Text
                   const SizedBox(height: 16),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -110,53 +136,208 @@ class DocumentDetailScreen extends StatelessWidget {
                               fontWeight: FontWeight.bold,
                             ),
                       ),
-                      if (document.ocrText != null)
+                      if (!_isEditing && _document.ocrText != null)
                         IconButton(
                           icon: const Icon(Icons.copy),
                           tooltip: 'Copy text',
-                          onPressed: () => _copyText(context, document.ocrText!),
+                          onPressed: () =>
+                              _copyText(context, _document.ocrText!),
                         ),
                     ],
                   ),
                   const SizedBox(height: 12),
-                  
-                  if (document.ocrText != null && document.ocrText!.isNotEmpty)
-                    Container(
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: Colors.grey[100],
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: Colors.grey[300]!),
-                      ),
-                      child: SelectableText(
-                        document.ocrText!,
-                        style: const TextStyle(
-                          fontSize: 14,
-                          height: 1.5,
-                        ),
-                      ),
-                    )
-                  else
-                    Container(
-                      padding: const EdgeInsets.all(24),
-                      decoration: BoxDecoration(
-                        color: Colors.grey[100],
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Center(
-                        child: Text(
-                          'No text extracted',
-                          style: TextStyle(
-                            color: Colors.grey[600],
-                            fontStyle: FontStyle.italic,
+                  _isEditing
+                      ? _buildEditableText(context)
+                      : _buildFormattedContent(context),
+                  if (_isEditing)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 12),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton(
+                              onPressed:
+                                  _isSaving ? null : () => _cancelEditing(),
+                              child: const Text('Cancel'),
+                            ),
                           ),
-                        ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: ElevatedButton.icon(
+                              onPressed: _isSaving ? null : () => _saveEdits(),
+                              icon: _isSaving
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                      ),
+                                    )
+                                  : const Icon(Icons.check),
+                              label: const Text('Save changes'),
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                 ],
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFormattedContent(BuildContext context) {
+    if (_document.textBlocks.isEmpty) {
+      if (_document.ocrText != null && _document.ocrText!.isNotEmpty) {
+        return Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Colors.grey[300]!),
+          ),
+          child: SelectableText(
+            _document.ocrText!,
+            style: const TextStyle(
+              fontSize: 14,
+              height: 1.5,
+              color: Colors.black87,
+            ),
+          ),
+        );
+      }
+
+      return Container(
+        padding: const EdgeInsets.all(24),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Center(
+          child: Text(
+            'No text extracted',
+            style: TextStyle(
+              color: Colors.grey[600],
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+        ),
+      );
+    }
+
+    final children = <Widget>[];
+    int numberedIndex = 1;
+
+    for (final block in _document.textBlocks) {
+      final formatting = block.formatting;
+      final textStyle = TextStyle(
+        fontSize: formatting.isTitle ? 20 : formatting.fontSize.toDouble(),
+        fontWeight: formatting.isBold || formatting.isTitle
+            ? FontWeight.bold
+            : FontWeight.normal,
+        fontStyle: formatting.isItalic ? FontStyle.italic : FontStyle.normal,
+        decoration:
+            formatting.isUnderlined ? TextDecoration.underline : null,
+        height: 1.5,
+        color: Colors.black87,
+      );
+
+      Widget line;
+      if (formatting.isBulletList) {
+        numberedIndex = 1;
+        line = Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Padding(
+              padding: EdgeInsets.only(top: 4),
+              child: Text('•', style: TextStyle(fontSize: 16)),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: SelectableText(
+                block.text,
+                style: textStyle,
+              ),
+            ),
+          ],
+        );
+      } else if (formatting.isNumberedList) {
+        line = Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                '${numberedIndex++}.',
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 14,
+                  color: Colors.black87,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: SelectableText(
+                block.text,
+                style: textStyle,
+              ),
+            ),
+          ],
+        );
+      } else {
+        numberedIndex = 1;
+        line = SelectableText(
+          block.text,
+          style: textStyle,
+        );
+      }
+
+      children.add(Padding(
+        padding: const EdgeInsets.only(bottom: 12),
+        child: line,
+      ));
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey[300]!),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: children,
+      ),
+    );
+  }
+
+  Widget _buildEditableText(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey[300]!),
+      ),
+      child: TextField(
+        controller: _textController,
+        maxLines: null,
+        minLines: 6,
+        keyboardType: TextInputType.multiline,
+        textCapitalization: TextCapitalization.sentences,
+        decoration: const InputDecoration(
+          border: InputBorder.none,
+          hintText: 'Edit extracted text...',
+        ),
+        style: const TextStyle(
+          fontSize: 14,
+          height: 1.5,
+          color: Colors.black87,
         ),
       ),
     );
@@ -191,6 +372,59 @@ class DocumentDetailScreen extends StatelessWidget {
     );
   }
 
+  void _toggleEditing() {
+    if (_isSaving) return;
+    setState(() {
+      if (_isEditing) {
+        _textController.text = _document.ocrText ?? '';
+      }
+      _isEditing = !_isEditing;
+    });
+  }
+
+  void _cancelEditing() {
+    setState(() {
+      _textController.text = _document.ocrText ?? '';
+      _isEditing = false;
+    });
+  }
+
+  Future<void> _saveEdits() async {
+    if (_isSaving) return;
+    final newText = _textController.text.trim();
+    setState(() {
+      _isSaving = true;
+    });
+
+    try {
+      final provider = context.read<DocumentProvider>();
+      final updated = _document.copyWith(
+        ocrText: newText.isEmpty ? null : newText,
+        updatedAt: DateTime.now(),
+      );
+      await provider.updateDocument(updated);
+      if (!mounted) return;
+      setState(() {
+        _document = updated;
+        _isEditing = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Document updated')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to save changes: $e')),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSaving = false;
+        });
+      }
+    }
+  }
+
   void _copyText(BuildContext context, String text) {
     Clipboard.setData(ClipboardData(text: text));
     ScaffoldMessenger.of(context).showSnackBar(
@@ -203,10 +437,10 @@ class DocumentDetailScreen extends StatelessWidget {
 
   Future<void> _shareDocument(BuildContext context) async {
     try {
-      if (File(document.imagePath).existsSync()) {
+      if (File(_document.imagePath).existsSync()) {
         await Share.shareXFiles(
-          [XFile(document.imagePath)],
-          text: document.ocrText ?? document.title,
+          [XFile(_document.imagePath)],
+          text: _document.ocrText ?? _document.title,
         );
       }
     } catch (e) {
@@ -234,10 +468,10 @@ class DocumentDetailScreen extends StatelessWidget {
   Future<void> _exportPDF(BuildContext context) async {
     try {
       final provider = context.read<DocumentProvider>();
-      final file = await provider.exportToPDF(document);
-      
+      final file = await provider.exportToPDF(_document);
+
       if (!context.mounted) return;
-      
+
       if (file != null) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -262,10 +496,10 @@ class DocumentDetailScreen extends StatelessWidget {
   Future<void> _exportTXT(BuildContext context) async {
     try {
       final provider = context.read<DocumentProvider>();
-      final file = await provider.exportToTXT(document);
-      
+      final file = await provider.exportToTXT(_document);
+
       if (!context.mounted) return;
-      
+
       if (file != null) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -292,7 +526,9 @@ class DocumentDetailScreen extends StatelessWidget {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Delete Document'),
-        content: const Text('Are you sure you want to delete this document? This action cannot be undone.'),
+        content: const Text(
+          'Are you sure you want to delete this document? This action cannot be undone.',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
@@ -308,8 +544,8 @@ class DocumentDetailScreen extends StatelessWidget {
     );
 
     if (confirmed == true && context.mounted) {
-      await context.read<DocumentProvider>().deleteDocument(document.id);
-      
+      await context.read<DocumentProvider>().deleteDocument(_document.id);
+
       if (context.mounted) {
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(

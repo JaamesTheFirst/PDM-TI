@@ -4,12 +4,14 @@ import '../models/document.dart';
 import '../services/database_service.dart';
 import '../services/ocr_service.dart';
 import '../services/pdf_service.dart';
+import '../services/formatting_model_service.dart';
 import 'dart:io';
 
 /// Provider for managing documents state
 class DocumentProvider with ChangeNotifier {
   final DatabaseService _databaseService = DatabaseService.instance;
-  final OCRService _ocrService = OCRService();
+  FormattingModelService? _formattingModel;
+  OCRService? _ocrService;
   final PDFService _pdfService = PDFService();
   
   List<Document> _documents = [];
@@ -46,9 +48,14 @@ class DocumentProvider with ChangeNotifier {
     notifyListeners();
 
     try {
+      await init();
+      final ocrService = _ocrService;
+      if (ocrService == null) {
+        throw StateError('DocumentProvider.init() must be called before scanning.');
+      }
       // Perform OCR
-      final ocrText = await _ocrService.recognizeText(imagePath);
-      final textBlocks = await _ocrService.recognizeTextBlocks(imagePath);
+      final ocrText = await ocrService.recognizeText(imagePath);
+      final textBlocks = await ocrService.recognizeTextBlocks(imagePath);
 
       // Create document
       final document = Document(
@@ -129,9 +136,16 @@ class DocumentProvider with ChangeNotifier {
     }
   }
 
+  Future<void> init() async {
+    if (_formattingModel != null && _ocrService != null) return;
+    _formattingModel = await FormattingModelService.create();
+    _ocrService = OCRService(_formattingModel!);
+  }
+
   @override
   void dispose() {
-    _ocrService.dispose();
+    _ocrService?.dispose();
+    _formattingModel?.close();
     super.dispose();
   }
 }
