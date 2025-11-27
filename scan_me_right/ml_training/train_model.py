@@ -3,31 +3,43 @@ Training Script for Document Formatting Recognition Model
 Optimized for CPU (16 cores) but will use GPU if available
 """
 
-import os
+import argparse
 import json
-import numpy as np
+import os
+import time
 from pathlib import Path
-from PIL import Image
+from typing import Dict, List, Tuple
+
+import matplotlib
+matplotlib.use("Agg")  # Non-interactive backend for server environments
+import matplotlib.pyplot as plt
+import numpy as np
 import tensorflow as tf
+from PIL import Image
+from sklearn.model_selection import train_test_split
 from tensorflow import keras
 from tensorflow.keras.applications import MobileNetV3Small
-from tensorflow.keras.layers import Dense, GlobalAveragePooling2D, Dropout
-from tensorflow.keras.models import Model
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
+from tensorflow.keras.layers import Dense, Dropout, GlobalAveragePooling2D
+from tensorflow.keras.models import Model
 from tensorflow.keras.utils import Sequence
-from sklearn.model_selection import train_test_split
-import matplotlib
-matplotlib.use('Agg')  # Non-interactive backend for server environments
-import matplotlib.pyplot as plt
-import time
+
+try:
+    from generate_training_data import BLOCK_TYPES as DEFAULT_STYLE_ORDER
+except ModuleNotFoundError:
+    DEFAULT_STYLE_ORDER = []
 
 # Configuration
-TRAINING_DATA_DIR = "training_data"
+DEFAULT_TRAINING_DATA_DIR = "training_data"
+DEFAULT_MODEL_OUTPUT_DIR = "models"
+STYLE_INDEX_FILENAME = "style_index.json"
+
+TRAINING_DATA_DIR = DEFAULT_TRAINING_DATA_DIR
 IMAGES_DIR = os.path.join(TRAINING_DATA_DIR, "images")
 LABELS_DIR = os.path.join(TRAINING_DATA_DIR, "labels")
 PAGES_DIR = os.path.join(TRAINING_DATA_DIR, "pages")
 METADATA_FILE = os.path.join(TRAINING_DATA_DIR, "metadata.json")
-MODEL_OUTPUT_DIR = "models"
+MODEL_OUTPUT_DIR = DEFAULT_MODEL_OUTPUT_DIR
 MODEL_CHECKPOINT_PATH = os.path.join(MODEL_OUTPUT_DIR, "best_model.keras")
 TFLITE_MODEL_PATH = os.path.join(MODEL_OUTPUT_DIR, "formatting_classifier.tflite")
 
@@ -39,18 +51,49 @@ LEARNING_RATE = 0.001
 VALIDATION_SPLIT = 0.15
 TEST_SPLIT = 0.15
 
-# Style mapping
-STYLE_TO_CLASS = {
-    'title': 0,
-    'paragraph': 1,
-    'bold': 2,
-    'italic': 3,
-    'underline': 4,
-    'bullet_list': 5,
-    'numbered_list': 6,
-}
+def configure_paths(data_dir: str, model_dir: str) -> None:
+    """Update global paths based on CLI arguments."""
+    global TRAINING_DATA_DIR, IMAGES_DIR, LABELS_DIR, PAGES_DIR, METADATA_FILE
+    global MODEL_OUTPUT_DIR, MODEL_CHECKPOINT_PATH, TFLITE_MODEL_PATH
 
-CLASS_TO_STYLE = {v: k for k, v in STYLE_TO_CLASS.items()}
+    TRAINING_DATA_DIR = data_dir
+    IMAGES_DIR = os.path.join(TRAINING_DATA_DIR, "images")
+    LABELS_DIR = os.path.join(TRAINING_DATA_DIR, "labels")
+    PAGES_DIR = os.path.join(TRAINING_DATA_DIR, "pages")
+    METADATA_FILE = os.path.join(TRAINING_DATA_DIR, "metadata.json")
+
+    MODEL_OUTPUT_DIR = model_dir
+    MODEL_CHECKPOINT_PATH = os.path.join(MODEL_OUTPUT_DIR, "best_model.keras")
+    TFLITE_MODEL_PATH = os.path.join(MODEL_OUTPUT_DIR, "formatting_classifier.tflite")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Train the document formatting recognition model.")
+    parser.add_argument(
+        "--data-dir",
+        type=str,
+        default=DEFAULT_TRAINING_DATA_DIR,
+        help="Directory containing generated training_data (pages/images/labels/metadata).",
+    )
+    parser.add_argument(
+        "--model-dir",
+        type=str,
+        default=DEFAULT_MODEL_OUTPUT_DIR,
+        help="Directory where trained models and artifacts will be saved.",
+    )
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=EPOCHS,
+        help="Number of training epochs.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=BATCH_SIZE,
+        help="Batch size for training.",
+    )
+    return parser.parse_args()
 
 
 def configure_tensorflow_cpu():
@@ -65,7 +108,7 @@ def configure_tensorflow_cpu():
     os.environ['TF_ENABLE_ONEDNN_OPTS'] = '1'  # OneDNN optimizations
     os.environ['OMP_NUM_THREADS'] = '16'
     
-    print("  ✅ Configured for 16 CPU threads")
+    print("Configured for 16 CPU threads successfully")
 
 
 def check_device():
@@ -76,7 +119,7 @@ def check_device():
     
     gpus = tf.config.list_physical_devices('GPU')
     if gpus:
-        print(f"✅ GPU(s) found: {len(gpus)}")
+        print(f"GPU(s) found: {len(gpus)}")
         for i, gpu in enumerate(gpus):
             print(f"  GPU {i}: {gpu.name}")
         try:
@@ -87,8 +130,8 @@ def check_device():
             print(f"  Warning: {e}")
         return True
     else:
-        print("⚠️  No GPU found. Training on CPU.")
-        print("   Optimized for 16-core CPU performance.")
+        print("No GPU found. Training on CPU.")
+        print(" Optimized for 16-core CPU performance.")
         configure_tensorflow_cpu()
         return False
 
@@ -132,57 +175,106 @@ class DataGenerator(Sequence):
             np.random.shuffle(self.indices)
 
 
-def load_dataset():
-    """Load dataset metadata and return generators (loads images in batches)"""
+def load_metadata() -> Tuple[Dict, float]:
+    """Load metadata JSON and ensure required directories exist."""
     print("\n" + "=" * 60)
     print("Loading Dataset Metadata")
     print("=" * 60)
-    
+
     if not os.path.exists(METADATA_FILE):
         raise FileNotFoundError(
             f"Metadata file not found: {METADATA_FILE}\n"
             "Please run generate_training_data.py first to create the dataset."
         )
-    
+
     if not os.path.isdir(PAGES_DIR):
         raise FileNotFoundError(
             f"Page image directory not found: {PAGES_DIR}\n"
             "Please regenerate the dataset to include full-page renders."
         )
-    
-    # Load metadata (just file paths and labels, not actual images)
-    print("Loading metadata...")
+
     start_time = time.time()
-    with open(METADATA_FILE, 'r', encoding='utf-8') as f:
+    with open(METADATA_FILE, "r", encoding="utf-8") as f:
         metadata = json.load(f)
     elapsed = time.time() - start_time
-    pages = metadata.get('pages', [])
-    if not pages:
+
+    if not metadata.get("pages"):
         raise ValueError("Metadata does not contain any page entries under the 'pages' key.")
-    
+
+    print(f"\n✅ Metadata loaded in {elapsed:.1f}s!")
+    return metadata, elapsed
+
+
+def derive_style_mapping(metadata: Dict) -> Dict[str, int]:
+    """Infer the style taxonomy from metadata, preserving generator order when available."""
+    style_set = set()
+    for page in metadata.get("pages", []):
+        style_set.update(page.get("feature_flags", {}).keys())
+    if not style_set:
+        style_set.update(
+            block.get("style")
+            for block in metadata.get("blocks", [])
+            if isinstance(block, dict) and block.get("style")
+        )
+
+    style_set = {style for style in style_set if style}
+
+    if not style_set:
+        raise ValueError("Unable to determine style taxonomy from metadata.")
+
+    ordered_styles: List[str] = []
+    if DEFAULT_STYLE_ORDER:
+        ordered_styles.extend([style for style in DEFAULT_STYLE_ORDER if style in style_set])
+
+    remaining = sorted(style_set.difference(set(ordered_styles)))
+    ordered_styles.extend(remaining)
+
+    return {style: idx for idx, style in enumerate(ordered_styles)}
+
+
+def persist_style_mapping(style_to_class: Dict[str, int]) -> str:
+    """Persist style/index mapping for downstream consumers (e.g., mobile app)."""
+    os.makedirs(MODEL_OUTPUT_DIR, exist_ok=True)
+    ordered_styles = [style for style, _ in sorted(style_to_class.items(), key=lambda kv: kv[1])]
+    mapping = {
+        "styles": ordered_styles,
+        "style_to_index": style_to_class,
+    }
+    mapping_path = os.path.join(MODEL_OUTPUT_DIR, STYLE_INDEX_FILENAME)
+    with open(mapping_path, "w", encoding="utf-8") as f:
+        json.dump(mapping, f, indent=2)
+    return mapping_path
+
+
+def load_dataset(metadata: Dict, style_to_class: Dict[str, int]):
+    """Prepare train/val/test splits and generators."""
+    pages = metadata.get("pages", [])
     samples = []
-    class_totals = {style: 0 for style in STYLE_TO_CLASS.keys()}
+    class_totals = {style: 0 for style in style_to_class.keys()}
+
     for page in pages:
-        feature_flags = page.get('feature_flags', {})
-        label_vector = [0.0] * len(STYLE_TO_CLASS)
-        for style, class_idx in STYLE_TO_CLASS.items():
+        feature_flags = page.get("feature_flags", {})
+        label_vector = [0.0] * len(style_to_class)
+        for style, class_idx in style_to_class.items():
             if feature_flags.get(style, 0):
                 label_vector[class_idx] = 1.0
                 class_totals[style] += 1
-        samples.append({
-            'filename': page['filename'],
-            'label': label_vector,
-        })
-    
-    print(f"\n✅ Metadata loaded in {elapsed:.1f}s!")
+        samples.append(
+            {
+                "filename": page["filename"],
+                "label": label_vector,
+            }
+        )
+
+    print("\nPreparing dataset splits...")
     print(f"   Total pages: {len(samples):,}")
-    print(f"   Classes: {len(STYLE_TO_CLASS)}")
-    
+    print(f"   Classes: {len(style_to_class)}")
+
     print("\nClass distribution (pages containing feature):")
     for style, count in sorted(class_totals.items()):
         percentage = (count / len(samples) * 100) if samples else 0
         print(f"  {style:13s}: {count:4d} pages ({percentage:5.1f}%)")
-    
+
     indices = np.arange(len(samples))
     val_test_fraction = VALIDATION_SPLIT + TEST_SPLIT
     train_indices, temp_indices = train_test_split(
@@ -204,26 +296,26 @@ def load_dataset():
         )
         val_indices = np.array(val_indices)
         test_indices = np.array(test_indices)
-    
+
     train_samples = [samples[i] for i in train_indices]
     val_samples = [samples[i] for i in val_indices]
     test_samples = [samples[i] for i in test_indices]
-    
+
     print(f"\nDataset splits:")
     print(f"  Training:   {len(train_samples):,} pages ({len(train_samples)/len(samples)*100:.1f}%)")
     print(f"  Validation: {len(val_samples):,} pages ({len(val_samples)/len(samples)*100:.1f}%)")
     print(f"  Test:       {len(test_samples):,} pages ({len(test_samples)/len(samples)*100:.1f}%)")
     print(f"\n✅ Using batch loading - images will be loaded on-demand during training")
     print(f"   This avoids out-of-memory errors with large datasets.\n")
-    
+
     train_gen = DataGenerator(train_samples, BATCH_SIZE, IMG_SIZE, shuffle=True)
     val_gen = DataGenerator(val_samples, BATCH_SIZE, IMG_SIZE, shuffle=False)
     test_gen = DataGenerator(test_samples, BATCH_SIZE, IMG_SIZE, shuffle=False)
-    
+
     return train_gen, val_gen, test_gen, test_samples
 
 
-def build_model(num_classes=len(STYLE_TO_CLASS)):
+def build_model(num_classes: int):
     """Build MobileNetV3-based model with transfer learning"""
     print("\n" + "=" * 60)
     print("Building Model")
@@ -240,7 +332,7 @@ def build_model(num_classes=len(STYLE_TO_CLASS)):
     
     # Freeze base model initially (transfer learning - only train classifier head)
     base_model.trainable = False
-    print("✅ Base model loaded (frozen for transfer learning)")
+    print("Base model loaded successfully(frozen for transfer learning)")
     
     # Add custom classifier
     inputs = keras.Input(shape=(*IMG_SIZE, 3))
@@ -262,11 +354,11 @@ def build_model(num_classes=len(STYLE_TO_CLASS)):
         ]
     )
     
-    print(f"✅ Model built successfully!")
-    print(f"   Total parameters: {model.count_params():,}")
+    print(f"Model built successfully!")
+    print(f"Total parameters: {model.count_params():,}")
     trainable = sum([tf.size(w).numpy() for w in model.trainable_weights])
-    print(f"   Trainable parameters: {trainable:,}")
-    print(f"   Non-trainable parameters: {model.count_params() - trainable:,}")
+    print(f"Trainable parameters: {trainable:,}")
+    print(f"Non-trainable parameters: {model.count_params() - trainable:,}")
     
     return model
 
@@ -325,7 +417,7 @@ def train_model(model, train_gen, val_gen):
     )
     
     elapsed = time.time() - start_time
-    print(f"\n✅ Training completed in {elapsed/60:.1f} minutes ({elapsed:.0f} seconds)!")
+    print(f"\nTraining completed successfully in {elapsed/60:.1f} minutes ({elapsed:.0f} seconds)!")
     return history, model
 
 
@@ -354,13 +446,13 @@ def convert_to_tflite(model):
         f.write(tflite_model)
     
     file_size_mb = os.path.getsize(TFLITE_MODEL_PATH) / (1024 * 1024)
-    print(f"✅ TFLite model saved: {TFLITE_MODEL_PATH}")
+    print(f"TFLite model saved: {TFLITE_MODEL_PATH}")
     print(f"   Model size: {file_size_mb:.2f} MB")
     
     if file_size_mb < 10:
-        print(f"   ✅ Model size goal achieved (< 10 MB)")
+        print(f"Model size goal achieved (< 10 MB)")
     else:
-        print(f"   ⚠️  Model size exceeds 10 MB goal")
+        print(f" Model size exceeds 10 MB goal")
     
     return TFLITE_MODEL_PATH
 
@@ -395,11 +487,11 @@ def plot_training_history(history):
     plt.tight_layout()
     plot_path = os.path.join(MODEL_OUTPUT_DIR, 'training_history.png')
     plt.savefig(plot_path, dpi=150, bbox_inches='tight')
-    print(f"✅ Training plots saved: {plot_path}")
+    print(f"Training plots saved: {plot_path}")
     plt.close()
 
 
-def evaluate_model(model, test_gen, test_samples):
+def evaluate_model(model, test_gen, test_samples, class_to_style: Dict[int, str]):
     """Evaluate model on test set"""
     print("\n" + "=" * 60)
     print("Evaluating Model")
@@ -414,15 +506,15 @@ def evaluate_model(model, test_gen, test_samples):
     print("Evaluating on test set...")
     test_loss, test_binary_acc, test_auc = model.evaluate(test_gen, verbose=1)
  
-    print(f"\n✅ Test Results:")
+    print(f"\nTest Results:")
     print(f"   Test Loss: {test_loss:.4f}")
     print(f"   Test Binary Accuracy: {test_binary_acc:.4f} ({test_binary_acc*100:.2f}%)")
     print(f"   Test AUC: {test_auc:.4f}")
     
     if test_binary_acc >= 0.90:
-        print(f"   ✅ Accuracy goal achieved (≥ 90%)")
+        print(f"Accuracy goal achieved (≥ 90%)")
     else:
-        print(f"   ⚠️  Accuracy below goal (≥ 90%)")
+        print(f"Accuracy below goal (≥ 90%)")
  
     # Get predictions for per-class metrics
     print("\nGenerating predictions for detailed metrics...")
@@ -440,7 +532,7 @@ def evaluate_model(model, test_gen, test_samples):
     y_pred_binary = (y_pred >= 0.5).astype(np.float32)
 
     print("\nPer-class metrics (threshold=0.5):")
-    for class_id, style_name in CLASS_TO_STYLE.items():
+    for class_id, style_name in sorted(class_to_style.items()):
         true_col = y_true[:, class_id]
         pred_col = y_pred_binary[:, class_id]
         support = int(true_col.sum())
@@ -466,37 +558,51 @@ def evaluate_model(model, test_gen, test_samples):
 
 def main():
     """Main training pipeline"""
+    args = parse_args()
+    configure_paths(args.data_dir, args.model_dir)
+    global EPOCHS, BATCH_SIZE
+    EPOCHS = args.epochs
+    BATCH_SIZE = args.batch_size
+
     print("=" * 60)
     print("Document Formatting Recognition - Model Training")
     print("Optimized for 16-Core CPU")
     print("=" * 60)
+    print(f"Data directory : {Path(TRAINING_DATA_DIR).resolve()}")
+    print(f"Model directory: {Path(MODEL_OUTPUT_DIR).resolve()}")
     
     # Check device
     has_gpu = check_device()
     if not has_gpu:
-        print("\n💡 CPU Training Tips:")
+        print("\nCPU Training Tips:")
         print("   - Using 16 CPU cores for parallel processing")
         print("   - Estimated training time: 2-5 hours")
         print("   - Monitor progress with callbacks (early stopping enabled)")
         print("   - Best model will be saved automatically")
     
-    # Load dataset (returns generators, not loaded arrays)
-    train_gen, val_gen, test_gen, test_samples = load_dataset()
+    # Load dataset metadata and build style taxonomy
+    metadata, _ = load_metadata()
+    style_to_class = derive_style_mapping(metadata)
+    class_to_style = {idx: style for style, idx in style_to_class.items()}
+    mapping_path = persist_style_mapping(style_to_class)
+
+    # Prepare generators
+    train_gen, val_gen, test_gen, test_samples = load_dataset(metadata, style_to_class) 
     
     # Build model
-    model = build_model(num_classes=len(STYLE_TO_CLASS))
+    model = build_model(num_classes=len(style_to_class))
     
     # Train using generators
     history, model = train_model(model, train_gen, val_gen)
     
     # Evaluate using generator
-    test_binary_acc = evaluate_model(model, test_gen, test_samples)
+    test_binary_acc = evaluate_model(model, test_gen, test_samples, class_to_style)
     
     # Plot history
     try:
         plot_training_history(history)
     except Exception as e:
-        print(f"⚠️  Could not generate plots: {e}")
+        print(f"Could not generate plots: {e}")
         import traceback
         traceback.print_exc()
     
@@ -505,11 +611,12 @@ def main():
     
     # Final summary
     print("\n" + "=" * 60)
-    print("Training Complete! 🎉")
+    print("Training Complete!")
     print("=" * 60)
-    print(f"✅ Best model saved: {MODEL_CHECKPOINT_PATH}")
-    print(f"✅ TFLite model saved: {tflite_path}")
-    print(f"✅ Test binary accuracy: {test_binary_acc*100:.2f}%")
+    print(f"Best model saved: {MODEL_CHECKPOINT_PATH}")
+    print(f"TFLite model saved: {tflite_path}")
+    print(f"Style index saved: {mapping_path}")
+    print(f"Test binary accuracy: {test_binary_acc*100:.2f}%")
     print("\nNext steps:")
     print("1. Review training plots: models/training_history.png")
     print("2. Copy the .tflite model to scan_me_right/assets/models/")

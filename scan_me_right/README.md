@@ -1,83 +1,61 @@
-# Scan Me Right 📱🔒
+# Scan Me Right
 
-**Privacy-first offline document scanner with AI-powered text recognition and formatting preservation.**
+Privacy-first offline document scanner with OCR, local persistence, PDF/TXT export, and an on-device TensorFlow Lite model that predicts formatting.
 
-An offline-first mobile application that scans documents, extracts text with OCR, preserves formatting (bold, italic, underline, headers), and exports to PDF/TXT — all without sending your sensitive data to the cloud.
+## Project Goal
 
-## 🎯 Project Goal
+Provide a secure alternative to cloud-backed scanners. Every step - capture, OCR, formatting recognition, storage, and export - runs entirely on-device.
 
-Solve the privacy issue: *"When I scan my docs with cloud services, who is actually getting my sensitive information?"*
+## Feature Status
 
-**Solution**: 100% offline processing. Your documents never leave your device.
+### Currently Implemented
+- Camera capture with optional gallery import
+- Offline OCR powered by Google ML Kit
+- Local document database (SQLite)
+- Export to PDF (styled) and TXT (plain)
+- On-device formatting classifier (TensorFlow Lite) integrated into the OCR pipeline
+- Share/export documents to other applications
 
-## ✨ Features
+### In Progress
+- Improve formatting accuracy (lists and emphasis currently underperform relative to paragraphs/titles)
+- DOCX export
+- Batch scanning workflow
+- Optional encrypted sync (deferred)
 
-### MVP Features (Current)
-- ✅ **Camera Capture**: Take photos of documents or import from gallery
-- ✅ **Offline OCR**: Extract text using Google ML Kit (on-device)
-- ✅ **Document Management**: Store and organize scanned documents locally (SQLite)
-- ✅ **PDF Export**: Generate styled PDFs offline
-- ✅ **TXT Export**: Export plain text
-- ✅ **Basic Formatting Detection**: Heuristic-based title/header detection
-- ✅ **Share Documents**: Share scanned documents with other apps
+## Tech Stack
 
-### Future Features (Phase 2)
-- 🚧 **AI Formatting Recognition**: Custom TensorFlow Lite model for accurate formatting detection
-- 🚧 **Bold/Italic/Underline Detection**: ML-powered style classification
-- 🚧 **DOCX Export**: Export to Microsoft Word format
-- 🚧 **Batch Scanning**: Scan multiple pages into a single document
-- 🚧 **Cloud Sync** (Optional): Encrypted backup with NestJS backend
+- Flutter 3.35 / Dart 3.9
+- State management: provider
+- OCR: google_mlkit_text_recognition
+- Persistence: sqflite + path_provider
+- Export: pdf, printing
+- ML runtime: tflite_flutter
+- Synthetic data & training: TensorFlow/Keras + Pillow/NumPy in `ml_training/`
 
-## 🛠 Tech Stack
-
-### Frontend (Mobile App)
-- **Framework**: Flutter 3.35+ (Dart 3.9+)
-- **State Management**: Provider
-- **OCR**: google_mlkit_text_recognition
-- **PDF Generation**: pdf + printing packages
-- **Local Database**: SQLite (sqflite)
-- **Camera**: camera + image_picker
-- **Permissions**: permission_handler
-
-### Future: AI Component (Phase 2)
-- **Model**: MobileNetV3 (TensorFlow Lite)
-- **Training**: Python (TensorFlow, Keras, PIL/OpenCV)
-- **Deployment**: TFLite model runs fully offline in Flutter
-
-### Backend (Optional - Phase 3)
-- **Framework**: NestJS (TypeScript)
-- **Database**: PostgreSQL (Dockerized)
-- **Deployment**: Docker containers
-
-## 📁 Project Structure
+## Project Structure
 
 ```
 scan_me_right/
-├── lib/
-│   ├── config/           # App configuration & theme
-│   ├── models/           # Data models (Document, TextBlock, etc.)
-│   ├── providers/        # State management (DocumentProvider)
-│   ├── screens/          # UI screens
-│   │   ├── home_screen.dart
-│   │   ├── camera_screen.dart
-│   │   └── document_detail_screen.dart
-│   ├── services/         # Business logic
-│   │   ├── database_service.dart
-│   │   ├── ocr_service.dart
-│   │   └── pdf_service.dart
-│   ├── utils/            # Helper utilities
-│   ├── widgets/          # Reusable UI components
-│   └── main.dart         # App entry point
-├── ml_training/          # ML model training scripts
-│   ├── generate_training_data.py
-│   ├── requirements.txt
-│   └── README.md
-├── android/              # Android-specific configuration
-├── ios/                  # iOS-specific configuration
-└── assets/               # Static assets (images, models)
+|-- lib/
+|   |-- config/
+|   |-- models/
+|   |-- providers/
+|   |-- screens/
+|   |-- services/
+|   |-- utils/
+|   |-- widgets/
+|   `-- main.dart
+|-- ml_training/
+|   |-- generate_training_data.py
+|   |-- train_model.py
+|   |-- run_full_pipeline.py
+|   `-- README.md
+|-- android/
+|-- ios/
+`-- assets/               # includes models/formatting_classifier.tflite
 ```
 
-## 🚀 Getting Started
+## Getting Started
 
 ### Prerequisites
 
@@ -104,9 +82,6 @@ scan_me_right/
    # For Android
    flutter run
 
-   # For iOS (macOS only)
-   flutter run -d ios
-
    # For specific device
    flutter devices
    flutter run -d <device-id>
@@ -125,7 +100,7 @@ flutter build apk --release
 flutter install
 ```
 
-## 📱 How to Use
+## How to Use
 
 1. **Launch the app** - You'll see the home screen with a list of scanned documents
 2. **Tap "Scan Document"** - Grant camera permissions when prompted
@@ -134,15 +109,14 @@ flutter install
 5. **View results** - See extracted text and formatting
 6. **Export** - Share or export as PDF/TXT
 
-## 🔐 Privacy Features
+## Privacy Features
 
-- ✅ **100% Offline Processing** - No internet connection required
-- ✅ **Local Storage Only** - All data stored on your device
-- ✅ **No Cloud APIs** - OCR runs entirely on-device with ML Kit
-- ✅ **No Analytics** - No tracking or data collection
-- ✅ **No Ads** - Clean, privacy-focused experience
+- Processing is fully offline; no network calls are made
+- Documents and metadata remain on-device (SQLite + file storage)
+- OCR relies solely on Google ML Kit's on-device APIs
+- No analytics, ads, or third-party telemetry SDKs
 
-## 🌳 Git Workflow
+## Git Workflow
 
 ```
 main (production releases)
@@ -160,32 +134,7 @@ main (production releases)
 3. Merge to `preview` for testing
 4. Once stable, merge `preview` → `main` for releases
 
-## 📊 Development Timeline
-
-### Phase 1: MVP (Weeks 1-4) ✅ COMPLETE
-- [x] Flutter project setup
-- [x] Camera integration
-- [x] ML Kit OCR integration
-- [x] Local database (SQLite)
-- [x] PDF/TXT export
-- [x] Basic UI/UX
-- [x] Heuristic formatting detection
-
-### Phase 2: ML Model (Weeks 5-8) 🚧 IN PROGRESS
-- [ ] Generate training data
-- [ ] Train formatting classifier
-- [ ] Export to TensorFlow Lite
-- [ ] Integrate TFLite model
-- [ ] Replace heuristics with ML predictions
-
-### Phase 3: Polish & Optional Features (Weeks 9-12)
-- [ ] Batch scanning
-- [ ] DOCX export
-- [ ] Cloud sync (optional)
-- [ ] App icons & branding
-- [ ] App store deployment
-
-## 🧪 Testing
+## Testing
 
 ```bash
 # Run unit tests
@@ -198,7 +147,7 @@ flutter test integration_test/
 flutter analyze
 ```
 
-## 📦 Building for Release
+## Building for Release
 
 ### Android
 ```bash
@@ -209,36 +158,15 @@ flutter build apk --release
 flutter build appbundle --release
 ```
 
-### iOS (macOS only)
-```bash
-# Build for iOS
-flutter build ios --release
-
-# Open in Xcode for signing and deployment
-open ios/Runner.xcworkspace
-```
-
-## 🤝 Contributing
+## Contributing
 
 This is an individual university project for Mobile Devices Programming.
 
-## 📄 License
+## License
 
 Educational project - developed for PDM (Mobile Devices Programming) course.
 
-## 👨‍💻 Author
-
-**Tiago Marques**  
-Individual Project - Mobile Devices Programming
-
-## 🎓 University Context
-
-- **Course**: Mobile Devices Programming (PDM)
-- **Institution**: [Your University]
-- **Academic Year**: 2024/2025
-- **Project Type**: Individual Assignment
-
-## 📚 Resources & References
+## Resources & References
 
 - [Flutter Documentation](https://docs.flutter.dev/)
 - [Google ML Kit](https://developers.google.com/ml-kit/vision/text-recognition)
@@ -246,13 +174,13 @@ Individual Project - Mobile Devices Programming
 - [Provider Package](https://pub.dev/packages/provider)
 - [SQLite Plugin](https://pub.dev/packages/sqflite)
 
-## 🐛 Known Issues
+## Known Issues
 
 - iOS support requires Xcode installation and configuration
 - Camera permissions must be granted manually on first use
 - ML Kit requires minimum Android SDK 21 (Android 5.0)
 
-## 🔮 Future Vision
+## Future Vision
 
 This project aims to create a **commercially viable** offline document scanner that fills a genuine market gap. Unlike existing cloud-based scanners (Microsoft Lens, Adobe Scan, CamScanner), Scan Me Right prioritizes:
 

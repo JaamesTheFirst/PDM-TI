@@ -80,6 +80,8 @@ class TextFormatting {
   final bool isUnderlined;
   final bool isTitle;
   final int fontSize;
+  final bool isBulletList;
+  final bool isNumberedList;
 
   TextFormatting({
     this.isBold = false,
@@ -87,6 +89,8 @@ class TextFormatting {
     this.isUnderlined = false,
     this.isTitle = false,
     this.fontSize = 12,
+    this.isBulletList = false,
+    this.isNumberedList = false,
   });
 }
 
